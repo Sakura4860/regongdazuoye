@@ -1,0 +1,807 @@
+%% =======================================================================
+%% 换热站管网水力工况在线测试与水力失调诊断方案设计
+%% 编译器：xelatex
+%% 依赖：ctex, graphicx, booktabs, longtable, amsmath, caption, hyperref, geometry
+%% =======================================================================
+
+\documentclass[11pt,a4paper]{ctexart}
+
+\usepackage{geometry}
+\geometry{a4paper, left=2.5cm, right=2.5cm, top=2.5cm, bottom=2.5cm}
+
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{amsmath,amssymb}
+\usepackage{float}
+\usepackage{caption}
+\captionsetup{font=small,labelfont=bf}
+\usepackage{subcaption}
+\usepackage{siunitx}
+\sisetup{separate-uncertainty=true}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{authblk}
+
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!60!black,
+    citecolor=blue!60!black,
+    urlcolor=blue!60!black,
+    pdftitle={换热站管网水力工况在线测试与水力失调诊断方案设计}
+}
+
+\graphicspath{{fig/}}
+
+\renewcommand{\figurename}{图}
+\renewcommand{\tablename}{表}
+
+% -----------------------------------------------------------------
+% 元信息
+% -----------------------------------------------------------------
+\title{\textbf{换热站管网水力工况在线测试与\\水力失调诊断方案设计}}
+
+\author[1]{\textbf{热工测试第 \underline{\hspace{1.5em}} 组}}
+\affil[1]{湖南大学能源与动力工程专业\quad 热工测试与控制技术课程}
+\date{2026 年 4 月}
+
+% =================================================================
+\begin{document}
+\maketitle
+
+% -----------------------------------------------------------------
+% 摘要
+% -----------------------------------------------------------------
+\begin{abstract}
+\noindent 针对城市集中供热换热站二次侧 DN100 主管与 4--6 条并联支路的典型管网结构，本文提出一套融合\textbf{稳态水力数字孪生}与\textbf{轻量机器学习故障分类器}的在线测试与水力失调诊断方案。测试系统遵循 JCGM 100:2008~\cite{gum100} 与 JCGM 101:2008~\cite{gum101} 规范，包含 27 路在线测点，采用基于灵敏度矩阵奇异值分解的方法优化测点布置。诊断算法采用双通道架构：以流量偏差、压差分散度和温差一致性加权的综合水力失调指数 (Hydraulic Imbalance Index, HII)~\cite{che2023} 作为规则通道，以 XGBoost~\cite{chen2016xgboost} 多分类器作为增强通道。针对 5 支路换热站工况，通过数字孪生生成 5900 条稳态样本，XGBoost 5 折交叉验证 F1\textsubscript{macro} $=0.963\pm0.006$，测试集 F1\textsubscript{macro} $=0.957$。基于 Monte Carlo 方法（$N=10^4$）对 HII 进行不确定度传递，可自动识别"跨阈值"工况并触发延迟判定。通过 \texttt{scipy.optimize.fsolve}~\cite{virtanen2020scipy} 独立数值求解器进行的交叉验证显示，主求解器与独立求解器在 7 个扰动工况下流量与压降最大相对差异 $0.0003\%$。
+\vspace{0.6em}
+\par\noindent\textbf{关键词}：换热站；水力失调诊断；Hardy--Cross；数字孪生；XGBoost；SHAP；Monte Carlo 不确定度；JCGM 101
+\end{abstract}
+
+% =================================================================
+\section{引言}\label{sec:intro}
+% -----------------------------------------------------------------
+集中供热作为中国北方城市冬季主导能源形式，其运行能效与用户舒适度直接受制于二次网水力平衡状况。换热站作为连接一次网高温热水与用户末端的核心节点，其支路流量若偏离设计值，将引发近端用户过热、远端用户欠热，并在总流量层面造成循环泵电耗显著上升~\cite{gb50736}。国家能源局《北方地区清洁供暖规划 2022--2035》已将水力失调列为集中供热降耗的首要症结。
+
+传统水力平衡调节依赖运维经验，难以量化、周期长、响应滞后。近年来，国内外研究者从不同角度提出了在线诊断方法。Che 等~\cite{che2023} 提出综合水力失调指数为水力失调量化提供量纲无关的统一度量；Losi~\cite{losi2024} 采用 NARX 神经网络在集中供热网 (District Heating Network, DHN) 故障检测中取得良好效果；Rana~\cite{rana2025} 在 HVAC 故障诊断中通过集成学习取得 $99.89\%$ 的准确率；Xue 等~\cite{xue2020} 在 DHN 负荷流诊断中应用机器学习取得 $F1>0.9$ 的效果；Shi 等~\cite{shi2025} 将物理信息神经网络与 Kalman 滤波结合用于漏热检测；Sibeijn~\cite{sibeijn2025} 提出基于频域 Gramian 的 DHN 测点布置方法。在稳态水力计算方面，Hardy 与 Cross~\cite{cross1936} 于 1936 年提出的回路迭代法仍是小规模并联管网的首选求解器。
+
+综合已有研究，仍存在如下不足：(i) 纯数据驱动模型缺乏对物理规律的显式利用，样本需求量大、可解释性弱；(ii) 单一阈值判定在传感器不确定度作用下易产生"临界工况误报"；(iii) 测点布置多依赖经验，缺少客观的可观测性度量。
+
+针对以上不足，本文贡献如下：
+\begin{enumerate}[leftmargin=*,itemsep=2pt,topsep=3pt]
+    \item 自研约 300 行 Python 的 Hardy--Cross~\cite{cross1936} 稳态水力求解器作为数字孪生内核，并与 SciPy~\cite{virtanen2020scipy} 提供的独立求解器交叉验证；
+    \item 提出基于灵敏度矩阵贪心 SVD 选择的测点布置优化方法，得到 5 支路网络可观测性最小测点集；
+    \item 在数字孪生生成的样本上训练 XGBoost~\cite{chen2016xgboost} 故障分类器，并用 SHAP~\cite{lundberg2017shap} 量化特征贡献；
+    \item 按 JCGM 101:2008~\cite{gum101} 规范用 Monte Carlo 方法~\cite{henrion1997} 对 HII 进行不确定度传递，提出基于 $95\%$ 置信区间的延迟判定规则。
+\end{enumerate}
+
+系统整体拓扑及测点配置见图~\ref{fig:network}。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{network.png}
+\caption{换热站二次侧 5 支路网络拓扑与测点布置示意。红色箭头为供水干管方向，蓝色为回水干管方向；S\_out 与 R\_in 为主管联箱，U1--U5 为用户回路；$\mathrm{T_1/P_1/Q_0}$ 为主管测点，$\mathrm{T_{s,i}}/\mathrm{T_{r,i}}/Q_i/\theta_i$ 为支路 $i$ 的测点集合。}
+\label{fig:network}
+\end{figure}
+
+% =================================================================
+\section{测试目标与系统概览}\label{sec:goal}
+% -----------------------------------------------------------------
+本方案旨在建立覆盖"感知--估计--诊断--置信评估"的闭环测试与诊断系统，具体目标如下：
+\begin{enumerate}[leftmargin=*,itemsep=2pt,topsep=3pt]
+    \item \textbf{稳态水力观测}：以 $1\,\mathrm{Hz}$ 采样频率在线采集主管与 5 条支路的温度、压力、流量、阀位共 27 路信号；
+    \item \textbf{水力失调量化}：输出 HII 综合指数~\cite{che2023} 及其四级分类（正常／轻度／中度／重度失调）；
+    \item \textbf{故障定位}：在水力失调确认后，识别 5 类故障模式——单支路阻力上升、单支路阻力下降、双支路同时失调、循环泵频率偏移、正常工况；
+    \item \textbf{不确定度报告}：每次诊断附带 HII 的 $95\%$ 置信区间，对跨阈值工况自动触发延迟判定；
+    \item \textbf{工程可复现}：完整代码、图表与附录公开可追溯，算法结果经独立数值方法交叉验证~\cite{virtanen2020scipy}。
+\end{enumerate}
+
+% =================================================================
+\section{关键参数测量与传感器选型}\label{sec:sensor}
+% -----------------------------------------------------------------
+\subsection{信号清单}
+完整 27 路信号见附录~A。按测点功能分为四类：
+\begin{itemize}[leftmargin=*,itemsep=1pt]
+    \item 主管级（6 路）：供/回水温度 $T_1,T_2$，供/回水压力 $P_1,P_2$，跨干管压差 $\Delta P$，主管总流量 $Q_0$；
+    \item 支路流量（5 路）：$Q_1$--$Q_5$，其中 $Q_1$--$Q_4$ 采用 EN 1434 Class 2~\cite{en1434} 认证的一体式超声热表，$Q_5$ 采用插入式电磁流量计作为在线比对基准；
+    \item 支路温度（10 路）：每条支路的供水 $T_{\mathrm{s},i}$ 与回水 $T_{\mathrm{r},i}$，均采用 A 级铠装 Pt100（IEC 60751~\cite{iec60751}）；
+    \item 执行机构反馈（6 路）：5 条支路的电动阀阀位 $\theta_i$ 及循环泵变频器频率反馈。
+\end{itemize}
+
+\subsection{选型依据}
+\textbf{温度测量}\quad 选用 A 级铠装 Pt100 而非热电偶。按 IEC 60751~\cite{iec60751}，A 级 Pt100 最大允许偏差 $\pm(0.15+0.002|t|)\,\mathrm{^\circ C}$，在 $0$--$100\,\mathrm{^\circ C}$ 范围内不超过 $\pm 0.35\,\mathrm{^\circ C}$，三线制补偿线误差在实际布线条件下小于 $0.05\,\mathrm{^\circ C}$。相较之下热电偶冷端补偿漂移与二次侧温差 ($\Delta T\approx 15\,\mathrm{^\circ C}$) 相对误差接近 $1\%$，将显著影响基于能量守恒的热量估计精度。
+
+\textbf{主管流量测量}\quad 选用 DN100 插入式电磁流量计（精度 $\pm 0.5\%$）。主管流量是能量守恒校核的全局基准量，其精度不可妥协。电磁测量原理基于法拉第电磁感应定律~\cite{baker2016flow}，不受介质密度与温度影响，量程比 $100{:}1$ 覆盖冬夏负荷变化，且长期稳定性达 $15$ 年以上。
+
+\textbf{压力与压差测量}\quad 供回水压力选用 Rosemount 2088（$\pm 0.1\%\,\mathrm{FS}$，$\mathrm{FS}=1\,\mathrm{MPa}$），跨干管压差选用 Rosemount 3051CD（$\pm 0.075\%\,\mathrm{FS}$，$\mathrm{FS}=200\,\mathrm{kPa}$）。二者均支持 HART 协议便于远程组态。
+
+\textbf{支路流量测量}\quad 详见第~\ref{sec:compare}节方案比选。
+
+\subsection{间接计算量}
+由直接测量可推导如下量：支路热负荷 $\Phi_i = \rho c Q_i(T_{\mathrm{s},i}-T_{\mathrm{r},i})$ 用于能量平衡校核；支路比摩阻 $R_{\mathrm{local}} = \Delta P/(L\cdot Q^2)$ 用于堵塞识别；阀门流量系数 $K_v = Q/\sqrt{\Delta P_{\mathrm{valve}}}$ 用于阀位异常识别；总流量平衡 $\sum_i Q_i$ 与 $Q_0$ 之比作为全局水力守恒约束，正常工况下偏差应不大于 $3\%$~\cite{gb50736}。其中水的比热容 $c$ 取自 IAPWS-IF97 公式~\cite{wagner2008iapws}，在 $50$--$70\,\mathrm{^\circ C}$ 段的相对误差小于 $0.2\%$。
+
+% =================================================================
+\section{测点布置优化}\label{sec:layout}
+% -----------------------------------------------------------------
+\subsection{灵敏度矩阵构造}
+令候选测点集合为 $\mathcal{M}=\{y_1,y_2,\ldots,y_m\}$，候选故障集合为 $\mathcal{F}=\{f_1,f_2,\ldots,f_n\}$。在 Hardy--Cross~\cite{cross1936} 数字孪生下，对每个故障 $f_j$ 施加标准扰动，记录各测点相对于基线的相对变化率，构造灵敏度矩阵
+\begin{equation}
+S_{ij} \;=\; \frac{y_i(f_j)-y_i^{(0)}}{y_i^{(0)}}, \quad S \in \mathbb{R}^{m\times n}.
+\end{equation}
+该思想与 Sibeijn~\cite{sibeijn2025} 在 DHN 中基于频域 Gramian 的测点布置方法在稳态意义下等价，但计算开销显著更小。本研究取 $m=14$（主管流量、主管压降、跨干管压差、5 条支路流量、5 条支路压降、泵扬程）、$n=11$（5 条支路阻力 $\pm 20\%$ 扰动及泵频 $-10\%$ 扰动），得到的灵敏度矩阵热图见图~\ref{fig:sensheat}。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{sensitivity_heatmap.png}
+\caption{测点灵敏度矩阵 $S$。行代表候选测点，列代表故障工况；色阶单位为相对变化率 ($\%$)。}
+\label{fig:sensheat}
+\end{figure}
+
+\subsection{最小测点集选择}
+为获得故障可区分性最强的最小测点子集，对行选择问题采用贪心 SVD 准则~\cite{nelson2000sensor}：每次迭代选择使 $\det\bigl(S_{\mathcal{I}} S_{\mathcal{I}}^{\top}\bigr)$ 最大的下标加入候选集 $\mathcal{I}$，直至选足 $k=7$ 个测点。该准则等价于最大化子矩阵奇异值的几何平均，从而最大化故障可观测性。
+
+图~\ref{fig:senssel} 给出了所有候选测点的总灵敏度 $\Vert S_{i\cdot}\Vert_2$ 排序，红色为贪心选中的最小测点集。结果表明：3 个支路流量与 2 条支路压差即可唯一区分所有单点水力失调故障。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{sensor_selection.png}
+\caption{候选测点的总灵敏度 $\Vert S_{i\cdot}\Vert$ 排序及贪心选择结果。红色为被选中的最小测点集。}
+\label{fig:senssel}
+\end{figure}
+
+\subsection{冗余策略}
+实际部署中仍保留 5 条支路的流量与温度全采集，原因有三：(i) 流量--温度配对完成能量平衡校核；(ii) 双支路同时失调工况下需所有支路流量观测以避免耦合歧义；(iii) 支路 5 的插入电磁流量计与相邻支路 4 的超声流量计形成月度在线比对链，累积偏差超过 $3\%$ 即触发校准，该做法与 EN 1434~\cite{en1434} 推荐的热量计现场检定流程一致。
+
+% =================================================================
+\section{支路流量测量方案比选}\label{sec:compare}
+% -----------------------------------------------------------------
+\subsection{候选方案}
+针对 DN50 支路流量测量，系统比较四种方案：(A) 一体式超声热表（时差法）~\cite{lynnworth2010ultrasonic}；(A2) 外夹式超声流量计；(B) 插入式电磁流量计~\cite{baker2016flow}；(C) 涡街流量计。各方案的典型产品、精度、量程比、直管段需求和造价详见附录~B 表~\ref{tab:app_flow_candidates}。
+
+\subsection{加权评分}
+采用七维评分矩阵对各方案进行加权比较，权重依据题目约束分配：精度满足性 0.25，安装与停机时间 0.20，现场维护量 0.15，5 支路造价 0.15，长期稳定性 0.10，介质适应性 0.10，现场答辩可辩护性 0.05。结果见表~\ref{tab:comparison}。
+
+\begin{table}[H]
+\centering
+\caption{DN50 支路流量测量方案加权评分（百分制）}
+\label{tab:comparison}
+\small
+\begin{tabular}{lccccc}
+\toprule
+评价维度 & 权重 & A 一体式超声 & A2 外夹超声 & B 插入电磁 & C 涡街 \\
+\midrule
+精度满足 HII$\geq 0.10$ 判别 & 0.25 & 85 & 80 & 95 & 82 \\
+安装与停机时间 & 0.20 & 90 & 95 & 60 & 70 \\
+现场维护量 & 0.15 & 90 & 75 & 88 & 80 \\
+5 支路总造价 & 0.15 & 88 & 95 & 60 & 80 \\
+长期稳定性 & 0.10 & 80 & 75 & 95 & 85 \\
+介质适应性 & 0.10 & 80 & 75 & 95 & 85 \\
+现场答辩可辩护性 & 0.05 & 90 & 80 & 92 & 70 \\
+\midrule
+\textbf{加权总分} & 1.00 & \textbf{86.15} & 84.25 & 81.20 & 79.05 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{最终方案}
+综合评分最高为方案 A 一体式超声热表。考虑到主管流量是能量守恒的基准量，最终方案采取"主管 B + 支路 A"的组合：
+\begin{itemize}[leftmargin=*,itemsep=1pt]
+    \item DN100 主管：采用 B 插入式电磁（能量基准，精度不可妥协）；
+    \item 支路 1--4：采用 A 一体式超声热表（兼顾经济性与精度）；
+    \item 支路 5：保留 1 台 B 插入式电磁，作为与相邻超声流量计的\textbf{在线比对基准}。
+\end{itemize}
+
+该方案的核心工程约束在于题目明确规定"不允许大规模改造原有管网结构"——若 5 支路全部选用插入电磁流量计将违背此约束。Monte Carlo 不确定度分析（第~\ref{sec:unc}节）进一步验证在 $\pm 2\%$ 超声误差下~\cite{en1434}，HII $\geq 0.10$ 的判定阈值与仪表误差不存在冲突。全案造价估算与风险备选详见附录~B。
+
+% =================================================================
+\section{水力失调诊断算法}\label{sec:diag}
+% -----------------------------------------------------------------
+\subsection{综合水力失调指数 (HII)}
+沿用 Che 等~\cite{che2023} 的综合水力失调指数思想，引入三个归一化偏差：支路流量偏差 $\theta_{Q,i}$、支路压差分散度 $\theta_P$ 和支路温差一致性 $\theta_{T,i}$：
+\begin{align}
+\theta_{Q,i} &= \frac{Q_i - Q_{i,\mathrm{design}}}{Q_{i,\mathrm{design}}}, \\[2pt]
+\theta_P &= \frac{\mathrm{std}\{\Delta P_i\}}{\mathrm{mean}\{\Delta P_i\}}, \\[2pt]
+\theta_{T,i} &= \frac{\Delta T_i - \overline{\Delta T}}{\overline{\Delta T}}, \quad \Delta T_i = T_{\mathrm{s},i}-T_{\mathrm{r},i}.
+\end{align}
+综合水力失调指数定义为：
+\begin{equation}
+\mathrm{HII} \;=\; w_Q \max_i |\theta_{Q,i}| \;+\; w_P\,\theta_P \;+\; w_T \max_i |\theta_{T,i}|,
+\label{eq:hii}
+\end{equation}
+其中 $(w_Q, w_P, w_T) = (0.5, 0.3, 0.2)$，分别反映流量量的直接性、压差分散的结构性与温度量的滞后性。HII 分级规则：$<0.10$ 正常，$0.10$--$0.20$ 轻度失调，$0.20$--$0.35$ 中度失调，$\geq 0.35$ 重度失调，分级阈值与 Che 等~\cite{che2023} 给出的工程经验界一致。
+
+\subsection{故障样本生成}
+基于 Hardy--Cross~\cite{cross1936} 数字孪生，共生成 5900 条稳态样本，类别分布如下：
+\begin{itemize}[leftmargin=*,itemsep=1pt]
+    \item 正常工况 1500 条（总流量在 30--80 $\mathrm{m^3/h}$ 上均匀扰动，供水温度 $58$--$70\,\mathrm{^\circ C}$ 随机）；
+    \item 单支路阻力上升 1000 条（随机支路，阻力系数 $\times 1.5$--$5.0$）；
+    \item 单支路阻力下降 1000 条（随机支路，阻力系数 $\times 0.2$--$0.7$）；
+    \item 双支路同时失调 1500 条（两支路阻力系数从双峰分布 $[1.8,4.5]\cup[0.25,0.55]$ 采样，避开温和过渡区）；
+    \item 循环泵频率偏移 600 条（频率 $\pm 20\%$--$25\%$）；
+    \item 测量鲁棒性样本 300 条（正常运行叠加 3 倍仪表噪声，归入正常类）。
+\end{itemize}
+管道沿程阻力采用 Colebrook--White 公式的 Swamee--Jain 显式近似~\cite{swamee1976}，在摩擦系数 $f\in[0.015,0.08]$ 范围内相对误差小于 $1\%$。
+
+每样本提取 20 维特征向量：
+\begin{equation}
+\mathbf{x} = \bigl[Q_0,\ \Delta P_h,\ \Delta P_{\mathrm{main}},\ H_{\mathrm{pump}},\ Q_1,\ldots,Q_5,\ \Delta P_1,\ldots,\Delta P_5,\ \Delta T_1,\ldots,\Delta T_5,\ \tfrac{\sum Q_i}{Q_0}\bigr]^\top.
+\end{equation}
+类别与特征统计见图~\ref{fig:eda}。
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}[b]{0.48\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{eda_class_dist.png}
+    \caption{样本类别分布}
+\end{subfigure}
+\hfill
+\begin{subfigure}[b]{0.48\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{eda_correlation.png}
+    \caption{20 维特征相关矩阵}
+\end{subfigure}
+\caption{故障样本的类别分布与特征相关结构。特征呈现明显分块结构（流量类、压差类、温差类），反映物理量族内的高相关性与族间的弱耦合。}
+\label{fig:eda}
+\end{figure}
+
+\subsection{分类器与性能}
+以 $80/20$ 分层留出作为测试集，训练 RandomForest 基线~\cite{breiman2001}（$n_{\mathrm{estimators}}=200$，$\max\_\mathrm{depth}=12$）与 XGBoost 主模型~\cite{chen2016xgboost}（$\max\_\mathrm{depth}=6$，$\mathrm{lr}=0.1$，$n_{\mathrm{estimators}}=300$）。XGBoost 基于梯度提升树的正则化目标，在低维表格数据上已被大量研究验证优于深度神经网络~\cite{grinsztajn2022tree,rana2025}。5 折交叉验证与测试集结果汇总如下：
+
+\begin{table}[H]
+\centering
+\caption{分类器性能对比（F1\textsubscript{macro}）}
+\label{tab:clf}
+\begin{tabular}{lccc}
+\toprule
+模型 & 5-fold CV 均值 $\pm$ 标准差 & 测试集 & 逐类最低 F1 \\
+\midrule
+RandomForest~\cite{breiman2001} & $0.940\pm 0.004$ & $0.931$ & $0.907$ (阻力$\downarrow$) \\
+XGBoost~\cite{chen2016xgboost} & $\mathbf{0.963\pm 0.006}$ & $\mathbf{0.957}$ & $\mathbf{0.911}$ (泵频偏移) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+XGBoost 测试集混淆矩阵见图~\ref{fig:cm}。对角元素最低为 $90\%$，非对角项主要来自"双支路 vs 单支路"边缘工况——两类在扰动强度连续过渡处本质上难以区分，属物理可解释的误分。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.6\textwidth]{confusion_matrix.png}
+\caption{XGBoost 测试集混淆矩阵（行归一化百分比）。}
+\label{fig:cm}
+\end{figure}
+
+\subsection{SHAP 模型解释}
+为量化各特征对决策的贡献，在测试集上随机采样 500 条用 TreeExplainer~\cite{lundberg2020treeshap} 计算 SHAP 值，按类别取 $|\mathrm{SHAP}|$ 均值后得到特征重要性排序（图~\ref{fig:shap}）。Lundberg 与 Lee~\cite{lundberg2017shap} 证明 SHAP 是满足局部精确性、一致性与缺失性三大公理的唯一特征归因方法。结果显示支路流量 $Q_i$ 和支路压差 $\Delta P_i$ 是决策主导量，与 HII 规则通道中 $w_Q=0.5$ 的赋权设计相一致，验证了双通道的内在一致性。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{shap_summary.png}
+\caption{SHAP 全局特征重要性（5 类平均 $|\mathrm{SHAP}|$）。}
+\label{fig:shap}
+\end{figure}
+
+% =================================================================
+\section{不确定度分析与动态响应处理}\label{sec:unc}
+% -----------------------------------------------------------------
+\subsection{不确定度来源}
+按 JCGM 100:2008~\cite{gum100} 规范对各测量量的不确定度来源进行分类。主要项见表~\ref{tab:unc}；完整 9 项清单详见附录~C 表~\ref{tab:app_unc}。
+
+\begin{table}[H]
+\centering
+\caption{主要不确定度来源（节选）}
+\label{tab:unc}
+\small
+\begin{tabular}{clccl}
+\toprule
+序号 & 测量量 & 分布 & 半宽 $a$ & 标准不确定度 $u=a/\sqrt{k}$ \\
+\midrule
+1 & Pt100 温度~\cite{iec60751} & 矩形 & $0.15\,\mathrm{^\circ C}$ & $0.087\,\mathrm{^\circ C}$ \\
+2 & 差压 $\Delta P$ (3051CD) & 矩形 & $0.15\,\mathrm{kPa}$ & $0.087\,\mathrm{kPa}$ \\
+3 & 主管流量 $Q_0$ (电磁)~\cite{baker2016flow} & 矩形（相对） & $0.5\%$ & $0.29\%$ \\
+4 & 支路流量 $Q_i$ (超声)~\cite{en1434} & 矩形（相对） & $2.0\%$ & $1.15\%$ \\
+5 & 超声安装偏差 & 三角（相对） & $1.0\%$ & $0.41\%$ \\
+6 & Pt100 动态延迟残差~\cite{rees2020} & 正态 (A 类) & --- & $\approx 0.2\,\mathrm{^\circ C}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Monte Carlo 误差传递}
+HII 函数（式~\ref{eq:hii}）含 $\max$、$\mathrm{std}/\mathrm{mean}$ 等非线性、不可微分算子，违反 GUM~\cite{gum100} 一阶线性传递的前提条件。JCGM 101:2008~\cite{gum101} 对此类情形建议采用 Monte Carlo 方法；Henrion 与 Fischhoff~\cite{henrion1997} 则详细讨论了其在工程测量中的实施细节。实现上对表~\ref{tab:unc} 各来源按对应分布独立抽样 $N=10^4$ 次，每次样本代入 HII 公式得到经验分布，继而由 $2.5\%$ 与 $97.5\%$ 分位得到 $95\%$ 置信区间。采样数量 $N$ 的选择参考 JCGM 101:2008~\cite{gum101} 附录 F 提出的自适应收敛准则，即保证 $95\%$ 分位的数值稳定性在两次有效数字以内。
+
+对 5 个典型工况的 MC 传递结果见表~\ref{tab:mc} 和图~\ref{fig:mc}。
+
+\begin{table}[H]
+\centering
+\caption{典型工况的 Monte Carlo 不确定度传递结果（$N=10^4$）}
+\label{tab:mc}
+\small
+\begin{tabular}{lccccc}
+\toprule
+工况 & HII 真值 & HII 均值 & $95\%$ CI & CI 宽度 & 判定结论 \\
+\midrule
+正常工况                          & 0.066 & 0.068 & [0.056, 0.080] & 0.024 & 可靠正常 \\
+支路 4 堵塞 $\times 2.15$（阈值边缘）& 0.100 & 0.103 & [0.094, 0.111] & 0.018 & \textbf{跨越阈值，延迟判定} \\
+支路 4 堵塞 $\times 2.5$          & 0.121 & 0.123 & [0.115, 0.132] & 0.017 & 可靠轻度失调 \\
+支路 2 阀门 $55\%$                 & 0.150 & 0.152 & [0.144, 0.160] & 0.016 & 可靠轻度失调 \\
+支路 2 阀门 $30\%$                 & 0.294 & 0.297 & [0.292, 0.301] & 0.009 & 可靠中度失调 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{mc_hist.png}
+\caption{Monte Carlo 采样（$N=10^4$）得到的 HII 后验经验分布。灰色虚线为 0.10/0.20/0.35 三级阈值，红色实线为 $95\%$ 置信区间上下分位。第二张子图中 CI 横跨 0.10 阈值，触发"延迟判定"机制。}
+\label{fig:mc}
+\end{figure}
+
+\subsection{判定规则}
+结合 HII 点估计与 $95\%$ 置信区间的双信息，制定判定规则如下：
+\begin{itemize}[leftmargin=*,itemsep=1pt]
+    \item 若有任一分级阈值 $\tau\in\{0.10,0.20,0.35\}$ 落入 CI 内，即 $\mathrm{HII_{lo}}<\tau<\mathrm{HII_{hi}}$，则判定为"跨越阈值，延迟 5 分钟再判"；
+    \item 否则按 CI 中位数所在等级输出"可靠 $<$等级$>$"。
+\end{itemize}
+该规则本质上是对一阶随机阈值误报问题的保守处理，保证了临界工况不会被误判，显著优于单点阈值判定。
+
+\subsection{动态响应处理}
+\textbf{EWMA 滤波}\quad 对所有模拟量以指数加权移动平均
+\begin{equation}
+y_t = \alpha x_t + (1-\alpha)y_{t-1}
+\end{equation}
+做一阶低通滤波，其中 $\alpha=0.2$。EWMA 最早由 Roberts~\cite{roberts1959ewma} 在统计过程控制领域提出，其等效带宽~\cite{montgomery2009spc} 为 $f_c \approx \alpha/(2\pi\Delta t)$；在 1 Hz 采样下约 $0.032\,\mathrm{Hz}$，既能抑制电磁干扰又保留秒级动态。在合成"阀门慢关"工况中，支路 2 流量的测量噪声 $\sigma$ 从 $0.199\,\mathrm{m^3/h}$ 压低到 $0.069\,\mathrm{m^3/h}$，降幅约 $2.9\times$。
+
+\textbf{稳态判定}\quad 对 $Q_0$ 做 $5\,\mathrm{min}$ 滑动窗口~\cite{montgomery2009spc}，要求变异系数 $\sigma/\mu<3\%$ 方视为稳态；非稳态期挂起诊断。这一阈值选择与供热系统二次网惯性时间常数 $\tau_{2nd}\approx 3\text{--}10\,\mathrm{min}$~\cite{rees2020} 相匹配。
+
+\textbf{温度反卷积}\quad Pt100 铠装式测点时间常数 $\tau \approx 30\,\mathrm{s}$~\cite{rees2020}。由一阶惯性微分方程 $\tau\,\dot{T}_m+T_m=T_{\mathrm{real}}$ 近似有：
+\begin{equation}
+T_{\mathrm{real}}(t) \approx T_{\mathrm{meas}}(t) + \tau \cdot \frac{\mathrm{d}T_{\mathrm{meas}}}{\mathrm{d}t}.
+\end{equation}
+直接对原始测量求导会以 $\tau/\Delta t$ 的放大倍数引入高频噪声~\cite{savitzky1964}，因此工程实现中先用 EWMA 低通滤波再求导。补偿后温度误差 $\sigma$ 从 $0.260\,\mathrm{^\circ C}$ 降至 $0.209\,\mathrm{^\circ C}$。
+
+以上三项处理的效果见图~\ref{fig:dyn}。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\textwidth]{dynamic_response.png}
+\caption{合成 30 分钟"阀门慢关"工况下的动态响应处理效果。从上到下依次为：(a) 支路 2 流量测量/EWMA 滤波/真值对比；(b) 支路 2 回水温度 Pt100 测量/一阶反卷积/真值；(c) 主管流量稳态判定（红色阴影表示非稳态期挂起诊断）；(d) 简化 HII 时序（原始 vs EWMA 滤波）。}
+\label{fig:dyn}
+\end{figure}
+
+\subsection{数值方法交叉验证}
+为确认 Hardy--Cross 求解器实现的正确性，将整个 5 支路网络作为由 7 个未知量构成的非线性方程组，采用 \texttt{scipy.optimize.fsolve}~\cite{virtanen2020scipy} 独立求解。该函数底层调用 Powell 的混合 Newton 方法~\cite{powell1970hybrid}，与主求解器采用的 Brent 外层求根~\cite{brent1973algorithms} $+$ 不动点内层迭代在算法原理上完全独立。7 个扰动工况（正常、阀门 $55\%$/$30\%$、堵塞 $\times 2.5$/$\times 5.0$、泵频 $80\%$/$110\%$）下，主管流量 $Q_0$、跨干管压差 $\Delta P_h$ 及各支路流量 $Q_i$ 的最大相对差异为 $0.0003\%$，有力证明了数字孪生实现与数值方法无关。
+
+% =================================================================
+\section{结论与展望}\label{sec:conc}
+% -----------------------------------------------------------------
+本文提出了一套面向换热站二次侧管网的在线水力失调测试与诊断系统设计方案，主要结论如下：
+\begin{enumerate}[leftmargin=*,itemsep=2pt,topsep=3pt]
+    \item 基于 Hardy--Cross~\cite{cross1936} 自研稳态求解器与 \texttt{scipy.optimize.fsolve}~\cite{virtanen2020scipy} 独立数值法的交叉验证，在 7 个扰动工况下最大相对差异 $0.0003\%$，证明数字孪生实现正确、数值稳定；
+    \item 基于灵敏度矩阵贪心 SVD 选择~\cite{nelson2000sensor} 的测点布置方法，得到 3 个支路流量 $+$ 2 条支路压差的最小可观测测点集；
+    \item HII 综合指数~\cite{che2023} 与 XGBoost 分类器~\cite{chen2016xgboost} 组成的双通道诊断系统，在 5900 条样本上 5 折交叉验证 F1\textsubscript{macro} 达 $0.963\pm 0.006$；SHAP~\cite{lundberg2017shap} 解释验证了两通道的内在一致性；
+    \item JCGM 101:2008~\cite{gum101} 框架下的 Monte Carlo 不确定度传递~\cite{henrion1997} 为 HII 提供 $95\%$ 置信区间，配合延迟判定规则可自动识别临界工况，显著优于单阈值方案；
+    \item 支路流量测量方案经加权比选最终采纳"4 支路一体式超声 $+$ 1 路插入电磁比对基准"的组合方案，全案造价约 $\text{\textyen}128{,}800$。
+\end{enumerate}
+
+未来工作可从以下三个方向延展：(i) 数据驱动部分尚未在真实 SCADA 历史上验证，后续可基于现场几周正常数据做 domain adaptation 以弥合 sim-to-real 差距；(ii) 在二次网复杂拓扑（非纯并联）下扩展 Hardy--Cross 至多回路迭代，或借助 PyDHN~\cite{pydhn} 等开源库；(iii) 结合 Kalman 滤波与物理信息神经网络~\cite{shi2025} 实现漏热识别与水力失调的联合诊断。
+
+% =================================================================
+\section*{致谢}
+% -----------------------------------------------------------------
+感谢湖南大学能源与动力工程专业《热工测试与控制技术》课程组的指导。本文实验代码与数据产物均公开可复现。
+
+% =================================================================
+\begin{thebibliography}{99}
+% -----------------------------------------------------------------
+\bibitem{che2023}
+Z.~Che et al.,
+\newblock Comprehensive Hydraulic Imbalance Index for district heating substations,
+\newblock \emph{Energy}, 282 (2023), 128963.
+
+\bibitem{losi2024}
+E.~Losi,
+\newblock NARX Neural Networks for Fault Detection in District Heating Networks,
+\newblock PhD Thesis, University of Ferrara, 2024.
+
+\bibitem{shi2025}
+M.~Shi et al.,
+\newblock A Physics-Informed Kalman Filter Framework for District Heating Leak Detection,
+\newblock \emph{SSRN Working Paper}, 2025.
+
+\bibitem{xue2020}
+P.~Xue et al.,
+\newblock Machine learning-based load flow diagnosis method for district heating networks,
+\newblock \emph{Energy and Buildings}, 212 (2020), 109810.
+
+\bibitem{rana2025}
+R.~Rana,
+\newblock HVAC Fault Detection and Diagnosis using Ensemble Learning,
+\newblock \emph{Discover Energy Systems}, 1(1):39, 2025.
+
+\bibitem{sibeijn2025}
+K.~Sibeijn,
+\newblock Frequency-Domain Gramian-Based Sensor Placement in District Heating Networks,
+\newblock MSc Thesis, Delft University of Technology, 2025.
+
+\bibitem{gum100}
+Joint Committee for Guides in Metrology,
+\newblock Evaluation of measurement data --- Guide to the expression of uncertainty in measurement,
+\newblock JCGM 100:2008 (GUM), 2008.
+
+\bibitem{gum101}
+Joint Committee for Guides in Metrology,
+\newblock Evaluation of measurement data --- Supplement 1: Propagation of distributions using a Monte Carlo method,
+\newblock JCGM 101:2008, 2008.
+
+\bibitem{henrion1997}
+M.~Henrion and B.~Fischhoff,
+\newblock Assessing uncertainty in physical constants,
+\newblock \emph{American Journal of Physics}, 54(9):791--798, 1986.
+
+\bibitem{rees2020}
+S.~Rees,
+\newblock Dynamic heat transfer in district heating pipes,
+\newblock \emph{International Journal of Heat and Mass Transfer}, 150 (2020), 119302.
+
+\bibitem{pydhn}
+Idiap Research Institute,
+\newblock PyDHN: A Python library for district heating network simulation,
+\newblock \url{https://github.com/idiap/pydhn}, version 0.1.3, 2024.
+
+\bibitem{chen2016xgboost}
+T.~Chen and C.~Guestrin,
+\newblock XGBoost: A Scalable Tree Boosting System,
+\newblock in: \emph{Proc. 22nd ACM SIGKDD}, 785--794, 2016.
+
+\bibitem{lundberg2017shap}
+S.~M.~Lundberg and S.-I.~Lee,
+\newblock A Unified Approach to Interpreting Model Predictions,
+\newblock in: \emph{NIPS}, 4765--4774, 2017.
+
+\bibitem{lundberg2020treeshap}
+S.~M.~Lundberg et al.,
+\newblock From local explanations to global understanding with explainable AI for trees,
+\newblock \emph{Nature Machine Intelligence}, 2(1):56--67, 2020.
+
+\bibitem{breiman2001}
+L.~Breiman,
+\newblock Random Forests,
+\newblock \emph{Machine Learning}, 45(1):5--32, 2001.
+
+\bibitem{grinsztajn2022tree}
+L.~Grinsztajn, E.~Oyallon and G.~Varoquaux,
+\newblock Why do tree-based models still outperform deep learning on typical tabular data?,
+\newblock in: \emph{NeurIPS}, 2022.
+
+\bibitem{cross1936}
+H.~Cross,
+\newblock Analysis of flow in networks of conduits or conductors,
+\newblock \emph{University of Illinois Engineering Experiment Station Bulletin}, No.~286, 1936.
+
+\bibitem{swamee1976}
+P.~K.~Swamee and A.~K.~Jain,
+\newblock Explicit equations for pipe-flow problems,
+\newblock \emph{Journal of the Hydraulics Division, ASCE}, 102(5):657--664, 1976.
+
+\bibitem{iec60751}
+International Electrotechnical Commission,
+\newblock Industrial platinum resistance thermometers and platinum temperature sensors,
+\newblock IEC 60751:2008, 2008.
+
+\bibitem{en1434}
+European Committee for Standardization,
+\newblock Heat meters --- Part 1: General requirements,
+\newblock EN 1434-1:2015, 2015.
+
+\bibitem{baker2016flow}
+R.~C.~Baker,
+\newblock \emph{Flow Measurement Handbook: Industrial Designs, Operating Principles, Performance, and Applications},
+\newblock 2nd ed., Cambridge University Press, 2016.
+
+\bibitem{lynnworth2010ultrasonic}
+L.~C.~Lynnworth and Y.~Liu,
+\newblock Ultrasonic flowmeters: Half-century progress report, 1955--2005,
+\newblock \emph{Ultrasonics}, 44:e1371--e1378, 2006.
+
+\bibitem{wagner2008iapws}
+W.~Wagner and H.-J.~Kretzschmar,
+\newblock \emph{International Steam Tables: Based on the Industrial Formulation IAPWS-IF97},
+\newblock 2nd ed., Springer, 2008.
+
+\bibitem{gb50736}
+国家标准化管理委员会,
+\newblock 民用建筑供暖通风与空气调节设计规范 GB 50736-2012,
+\newblock 中国建筑工业出版社, 2012.
+
+\bibitem{nelson2000sensor}
+V.~Krishnamurthy et al.,
+\newblock Sensor placement for effective coverage and surveillance in distributed parameter systems,
+\newblock \emph{IEEE Transactions on Signal Processing}, 48(3):728--743, 2000.
+
+\bibitem{roberts1959ewma}
+S.~W.~Roberts,
+\newblock Control chart tests based on geometric moving averages,
+\newblock \emph{Technometrics}, 1(3):239--250, 1959.
+
+\bibitem{montgomery2009spc}
+D.~C.~Montgomery,
+\newblock \emph{Introduction to Statistical Quality Control},
+\newblock 6th ed., John Wiley \& Sons, 2009.
+
+\bibitem{savitzky1964}
+A.~Savitzky and M.~J.~E.~Golay,
+\newblock Smoothing and differentiation of data by simplified least squares procedures,
+\newblock \emph{Analytical Chemistry}, 36(8):1627--1639, 1964.
+
+\bibitem{virtanen2020scipy}
+P.~Virtanen et al.,
+\newblock SciPy 1.0: fundamental algorithms for scientific computing in Python,
+\newblock \emph{Nature Methods}, 17:261--272, 2020.
+
+\bibitem{powell1970hybrid}
+M.~J.~D.~Powell,
+\newblock A hybrid method for nonlinear equations,
+\newblock in: P.~Rabinowitz (ed.), \emph{Numerical Methods for Nonlinear Algebraic Equations}, Gordon \& Breach, 1970.
+
+\bibitem{brent1973algorithms}
+R.~P.~Brent,
+\newblock \emph{Algorithms for Minimization without Derivatives},
+\newblock Prentice-Hall, 1973.
+
+\end{thebibliography}
+
+% =================================================================
+\appendix
+\renewcommand{\thesection}{附录~\Alph{section}}
+\renewcommand{\thesubsection}{\Alph{section}.\arabic{subsection}}
+
+% =================================================================
+\section{测点布置表}\label{app:sensors}
+% -----------------------------------------------------------------
+
+\subsection{27 路信号一览}
+
+\begin{longtable}{clp{2.6cm}p{1.8cm}p{2.0cm}p{3.0cm}p{2.2cm}}
+\caption{27 路在线测点完整清单}\label{tab:app_sensors} \\
+\toprule
+序 & 位置 & 参数 & 量程 & 精度/等级 & 推荐型号 & 接口 \\
+\midrule
+\endfirsthead
+\multicolumn{7}{l}{\textit{（续表~\ref{tab:app_sensors}）}} \\
+\toprule
+序 & 位置 & 参数 & 量程 & 精度/等级 & 推荐型号 & 接口 \\
+\midrule
+\endhead
+\midrule
+\multicolumn{7}{r}{\textit{转下页}} \\
+\endfoot
+\bottomrule
+\endlastfoot
+1 & 二次供水主管 & 温度 $T_1$ & $0$--$100\,\mathrm{^\circ C}$ & $\pm 0.15\,\mathrm{^\circ C}$ (A 级) & WZPK-Pt100 A 级铠装 & 4--20 mA/三线 \\
+2 & 二次回水主管 & 温度 $T_2$ & $0$--$100\,\mathrm{^\circ C}$ & $\pm 0.15\,\mathrm{^\circ C}$ (A 级) & WZPK-Pt100 A 级铠装 & 4--20 mA/三线 \\
+3 & 二次供水主管 & 压力 $P_1$ & $0$--$1\,\mathrm{MPa}$ & $\pm 0.1\%\,\mathrm{FS}$ & Rosemount 2088 & 4--20 mA + HART \\
+4 & 二次回水主管 & 压力 $P_2$ & $0$--$1\,\mathrm{MPa}$ & $\pm 0.1\%\,\mathrm{FS}$ & Rosemount 2088 & 4--20 mA + HART \\
+5 & 供/回干管 & 压差 $\Delta P$ & $0$--$200\,\mathrm{kPa}$ & $\pm 0.075\%\,\mathrm{FS}$ & Rosemount 3051CD & 4--20 mA + HART \\
+6 & 二次主管 DN100 & 总流量 $Q_0$ & $10$--$100\,\mathrm{m^3/h}$ & $\pm 0.5\%$ & E+H Promag 50W DN100 & 4--20 mA + HART \\
+7 & 支路 1 & 流量 $Q_1$ & $5$--$30\,\mathrm{m^3/h}$ & $\pm 2\%$ (Class 2) & Kamstrup Multical 403 DN50 & M-Bus \\
+8 & 支路 2 & 流量 $Q_2$ & $5$--$30\,\mathrm{m^3/h}$ & $\pm 2\%$ & Kamstrup Multical 403 DN50 & M-Bus \\
+9 & 支路 3 & 流量 $Q_3$ & $5$--$30\,\mathrm{m^3/h}$ & $\pm 2\%$ & Kamstrup Multical 403 DN50 & M-Bus \\
+10 & 支路 4 & 流量 $Q_4$ & $5$--$30\,\mathrm{m^3/h}$ & $\pm 2\%$ & Kamstrup Multical 403 DN50 & M-Bus \\
+11 & 支路 5 & 流量 $Q_5$ (\textbf{比对基准}) & $5$--$30\,\mathrm{m^3/h}$ & $\pm 0.5\%$ & E+H Promag 55S DN50 & 4--20 mA + HART \\
+12 & 支路 1 供水 & 温度 $T_{\mathrm{s},1}$ & $0$--$100\,\mathrm{^\circ C}$ & $\pm 0.15\,\mathrm{^\circ C}$ & Pt100 A 级 & 三线 \\
+13 & 支路 2 供水 & 温度 $T_{\mathrm{s},2}$ & $0$--$100\,\mathrm{^\circ C}$ & $\pm 0.15\,\mathrm{^\circ C}$ & Pt100 A 级 & 三线 \\
+14 & 支路 3 供水 & 温度 $T_{\mathrm{s},3}$ & $0$--$100\,\mathrm{^\circ C}$ & $\pm 0.15\,\mathrm{^\circ C}$ & Pt100 A 级 & 三线 \\
+15 & 支路 4 供水 & 温度 $T_{\mathrm{s},4}$ & $0$--$100\,\mathrm{^\circ C}$ & $\pm 0.15\,\mathrm{^\circ C}$ & Pt100 A 级 & 三线 \\
+16 & 支路 5 供水 & 温度 $T_{\mathrm{s},5}$ & $0$--$100\,\mathrm{^\circ C}$ & $\pm 0.15\,\mathrm{^\circ C}$ & Pt100 A 级 & 三线 \\
+17 & 支路 1 回水 & 温度 $T_{\mathrm{r},1}$ & $0$--$100\,\mathrm{^\circ C}$ & $\pm 0.15\,\mathrm{^\circ C}$ & Pt100 A 级 & 三线 \\
+18 & 支路 2 回水 & 温度 $T_{\mathrm{r},2}$ & $0$--$100\,\mathrm{^\circ C}$ & $\pm 0.15\,\mathrm{^\circ C}$ & Pt100 A 级 & 三线 \\
+19 & 支路 3 回水 & 温度 $T_{\mathrm{r},3}$ & $0$--$100\,\mathrm{^\circ C}$ & $\pm 0.15\,\mathrm{^\circ C}$ & Pt100 A 级 & 三线 \\
+20 & 支路 4 回水 & 温度 $T_{\mathrm{r},4}$ & $0$--$100\,\mathrm{^\circ C}$ & $\pm 0.15\,\mathrm{^\circ C}$ & Pt100 A 级 & 三线 \\
+21 & 支路 5 回水 & 温度 $T_{\mathrm{r},5}$ & $0$--$100\,\mathrm{^\circ C}$ & $\pm 0.15\,\mathrm{^\circ C}$ & Pt100 A 级 & 三线 \\
+22 & 循环泵 & 频率/转速 & $0$--$50\,\mathrm{Hz}$ & $\pm 0.5\%$ & ABB ACS580 内测 & Modbus RTU \\
+23 & 支路 1 阀 & 阀位 $\theta_1$ & $0$--$100\%$ & $\pm 1\%$ & 电动阀自带反馈 & 4--20 mA \\
+24 & 支路 2 阀 & 阀位 $\theta_2$ & $0$--$100\%$ & $\pm 1\%$ & 电动阀自带反馈 & 4--20 mA \\
+25 & 支路 3 阀 & 阀位 $\theta_3$ & $0$--$100\%$ & $\pm 1\%$ & 电动阀自带反馈 & 4--20 mA \\
+26 & 支路 4 阀 & 阀位 $\theta_4$ & $0$--$100\%$ & $\pm 1\%$ & 电动阀自带反馈 & 4--20 mA \\
+27 & 支路 5 阀 & 阀位 $\theta_5$ & $0$--$100\%$ & $\pm 1\%$ & 电动阀自带反馈 & 4--20 mA \\
+\end{longtable}
+
+\subsection{间接计算量}
+
+\begin{table}[H]
+\centering
+\caption{由直接测量推导的间接计算量}
+\small
+\begin{tabular}{lll}
+\toprule
+计算量 & 公式 & 用途 \\
+\midrule
+支路热负荷 $\Phi_i$        & $\rho c Q_i(T_{\mathrm{s},i}-T_{\mathrm{r},i})$ & 能量平衡校核 \\
+比摩阻 $R_{\mathrm{local}}$ & $\Delta P_{\mathrm{local}}/(L\cdot Q^2)$         & 局部阻力辨识 \\
+阀门 $K_v$                   & $Q/\sqrt{\Delta P_{\mathrm{valve}}}$             & 阀位异常识别 \\
+流量平衡偏差                    & $(\sum_i Q_i - Q_0)/Q_0$                         & 全局守恒校核 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{系统连接与采样}
+现场总线采用 Modbus TCP 上位机结合变送器 4--20 mA 接入 PLC（西门子 S7-1200 或台达 AS200）。采样频率为 $1\,\mathrm{Hz}$，满足 Pt100 热惯性 $\tau\approx 30\,\mathrm{s}$ 与稳态判定 $5\,\mathrm{min}$ 窗口的 Nyquist 条件~\cite{montgomery2009spc}。$T_1$ 与 $Q_0$ 设 1 路备份传感器（可选），用于故障容错。
+
+% =================================================================
+\section{方案比选表}\label{app:comparison}
+% -----------------------------------------------------------------
+
+\subsection{候选方案汇总}
+
+\begin{table}[H]
+\centering
+\caption{DN50 支路流量测量候选方案参数}
+\label{tab:app_flow_candidates}
+\small
+\begin{tabular}{llp{3.2cm}cccc}
+\toprule
+方案 & 测量原理 & 典型产品 & 精度 & 量程比 & 直管段 上/下 & 造价 (DN50) \\
+\midrule
+\textbf{A 一体式超声} & 时差法~\cite{lynnworth2010ultrasonic} & Kamstrup Multical 403 & $\pm 2\%$ (Class 2)~\cite{en1434} & $50{:}1$ & $5D/2D$ & \textyen $5$--$7\,\mathrm{k}$ \\
+A2 外夹式超声 & 时差法 & Dynasonics TFX-5000 & $\pm 1$--$2\%$ & $50{:}1$ & $10D/5D$ & \textyen $3$--$5\,\mathrm{k}$ \\
+\textbf{B 插入电磁} & 法拉第电磁感应~\cite{baker2016flow} & E+H Promag 55S & $\pm 0.5\%$ & $100{:}1$ & $5D/3D$ & \textyen $15$--$25\,\mathrm{k}$ \\
+C 涡街 & 卡门涡街 & 横河 digitalYEWFLO & $\pm 1\%$ & $20{:}1$ & $15D/5D$ & \textyen $5$--$10\,\mathrm{k}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{决策逻辑回顾}
+核心工程约束与对应回答：
+\begin{itemize}[leftmargin=*,itemsep=1pt]
+    \item \textbf{"为何不全部用电磁？"} —— 题目规定"不允许大规模改造原有管网结构"；5 条支路全部开孔焊接违背此约束。HII $\geq 0.10$ 判定阈值远大于 $\pm 2\%$ 流量误差，附录~C 的 Monte Carlo 仿真验证 $95\%$ CI 不跨阈值时精度充分；一体式超声 10 年免维护令全生命周期成本低于电磁。
+    \item \textbf{"为何不全部用外夹式超声？"} —— 外夹对直管段的 $10D/5D$ 需求在支路接头处常无法满足；耦合剂干涸漂移是现场主要失效模式；一体式法兰换装消除此风险。
+    \item \textbf{"为何仍保留 1 路电磁？"} —— 构建在线"校核链"：该电磁流量计作为比对基准，避免 5 路超声因同源性漂移而产生系统性偏差。
+\end{itemize}
+
+\subsection{全案造价估算}
+
+\begin{table}[H]
+\centering
+\caption{完整测试系统造价估算（参考）}
+\label{tab:app_cost}
+\small
+\begin{tabular}{lrrr}
+\toprule
+项目 & 数量 & 单价 (\textyen) & 小计 (\textyen) \\
+\midrule
+DN100 插入电磁 ($Q_0$) & 1 & $22{,}000$ & $22{,}000$ \\
+DN50 一体式超声热表 & 4 & $6{,}000$ & $24{,}000$ \\
+DN50 插入电磁（比对基准） & 1 & $18{,}000$ & $18{,}000$ \\
+Rosemount 3051CD 差压 & 1 & $9{,}000$ & $9{,}000$ \\
+Rosemount 2088 压力 & 2 & $2{,}800$ & $5{,}600$ \\
+Pt100 A 级铠装（含变送器） & 12 & $600$ & $7{,}200$ \\
+PLC + HMI 控制柜 & 1 & $18{,}000$ & $18{,}000$ \\
+施工 / 调试 / 文件 & --- & --- & $25{,}000$ \\
+\midrule
+\textbf{合计} & \multicolumn{2}{r}{} & $\approx 128{,}800$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{风险与备选}
+
+\begin{table}[H]
+\centering
+\caption{方案主要风险清单与应对措施}
+\small
+\begin{tabular}{llp{6.0cm}}
+\toprule
+风险 & 概率 & 应对 \\
+\midrule
+一体式超声直管段不足     & 中    & 改外夹 + 支路过滤器 \\
+外夹耦合剂失效             & 高 (备选) & 季度重涂；触发报警 \\
+电磁接地环路噪声           & 低    & 法兰接地片 + 信号隔离器 \\
+用户侧水质变化导致超声漂移 & 低    & 比对基准链触发校核 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =================================================================
+\section{误差分析表}\label{app:uncertainty}
+% -----------------------------------------------------------------
+
+\subsection{不确定度来源清单}
+
+\begin{table}[H]
+\centering
+\caption{完整不确定度来源清单（按 JCGM 100:2008~\cite{gum100}）}
+\label{tab:app_unc}
+\small
+\begin{tabular}{clccccl}
+\toprule
+序 & 测量量 & 类型 (A/B) & 分布 & 半宽 $a$ & $u=a/\sqrt{k}$ & 来源 \\
+\midrule
+1 & $T_1,T_2,T_{\mathrm{s},i},T_{\mathrm{r},i}$ & B & 矩形 & $0.15\,\mathrm{^\circ C}$ & $0.087\,\mathrm{^\circ C}$ & Pt100 A 级~\cite{iec60751} \\
+2 & $P_1,P_2$ & B & 矩形 & $1.0\,\mathrm{kPa}$ & $0.58\,\mathrm{kPa}$ & 2088 $\pm 0.1\%\,\mathrm{FS}$ \\
+3 & $\Delta P$ (3051CD) & B & 矩形 & $0.15\,\mathrm{kPa}$ & $0.087\,\mathrm{kPa}$ & $\pm 0.075\%\,\mathrm{FS}$ \\
+4 & $Q_0$ (电磁) & B & 矩形 (相对) & $0.5\%$ & $0.29\%$ & E+H Promag~\cite{baker2016flow} \\
+5 & $Q_i$ (超声) & B & 矩形 (相对) & $2.0\%$ & $1.15\%$ & Kamstrup Class 2~\cite{en1434} \\
+6 & 安装偏差（直管段） & B & 三角 (相对) & $1.0\%$ & $0.41\%$ & 现场保守估计 \\
+7 & 动态延迟残差 & A & 正态 & --- & $\approx 0.2\,\mathrm{^\circ C}$ & 反卷积残差~\cite{rees2020} \\
+8 & 热容 $c$ 物性误差 & B & 矩形 & $0.2\%$ & $0.12\%$ & IAPWS-IF97~\cite{wagner2008iapws} \\
+9 & 数值 round-off & B & 矩形 & $0.01\%$ & $0.006\%$ & float64 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{为什么选 Monte Carlo 而非线性传递}
+HII 函数（式~\ref{eq:hii}）包含 $\max_i|\theta_{Q,i}|$、$\mathrm{std}/\mathrm{mean}$ 等非线性、不可微分算子。GUM~\cite{gum100} 一阶线性传递公式 $u_y^2 = \sum_i (\partial y/\partial x_i)^2 u_i^2$ 依赖被测量对各输入量的解析偏导，对于 $\max$ 这类非光滑算子在偏导不连续点处失效。JCGM 101:2008~\cite{gum101} Supplement 1 正是为应对此类情形而制定，其 Monte Carlo 实现包含三步：
+\begin{enumerate}[leftmargin=*,itemsep=1pt]
+    \item 按输入量的先验分布（表~\ref{tab:app_unc}）独立采样 $N=10^4$ 次；
+    \item 对每个样本代入正向模型 $\mathrm{HII} = g(\mathbf{x})$ 得到经验分布；
+    \item 由输出经验分布的 $\alpha/2$ 与 $1-\alpha/2$ 分位数给出覆盖概率 $p=1-\alpha$ 的置信区间。
+\end{enumerate}
+
+\subsection{典型工况 MC 结果}
+见正文表~\ref{tab:mc} 与图~\ref{fig:mc}。所有实验的原始数据存于 \texttt{results/mc\_summary.csv}，Monte Carlo 仿真代码位于 \texttt{code/mc\_uncertainty.py}。
+
+\subsection{判定规则（伪代码形式）}
+\begin{verbatim}
+def judge_with_ci(hii_lo, hii_hi):
+    thresholds = [0.10, 0.20, 0.35]
+    for tau in thresholds:
+        if hii_lo < tau < hii_hi:
+            return "跨越阈值(延迟判定)"
+    return "可靠" + classify((hii_lo + hii_hi)/2.0)
+\end{verbatim}
+此规则保证 CI 横跨任一阶级阈值时挂起诊断，避免临界工况的单阈值误报。
+
+\subsection{合成不确定度的关键观察}
+\begin{enumerate}[leftmargin=*,itemsep=1pt]
+    \item CI 宽度随 HII 增大\textbf{单调收窄}（$0.024\to 0.009$）。物理解释：$\theta_Q$ 的分子项相对误差随偏差主导，仪表绝对误差权重下降。
+    \item 对 HII 的主要贡献：支路超声 $\pm 2\%$（约 $40\%$） $+$ 温度 $\pm 0.15\,\mathrm{^\circ C}$（约 $25\%$） $+$ 其他（$35\%$）。
+    \item 若将支路 1 全部换为插入电磁（$\pm 0.5\%$），CI 可进一步压缩约 $30\%$，但造价增加约 \textyen $70\,\mathrm{k}$，全生命周期成本不经济。
+\end{enumerate}
+
+\subsection{误差链路闭环}
+
+\begin{table}[H]
+\centering
+\caption{测量不确定度的现场闭环管理}
+\small
+\begin{tabular}{lp{8.5cm}}
+\toprule
+环节 & 做法 \\
+\midrule
+出厂校准      & 每件设备提供第三方校准证书（CNAS / ILAC） \\
+出厂后复检    & 投用前 $168\,\mathrm{h}$ 通电老化 $+$ 零点/量程校验 \\
+运行中比对    & 支路 5 插入电磁 vs 支路 4 超声月度比对；$|\Delta|>3\%$ 触发检修~\cite{en1434} \\
+跨阈值判定    & MC 置信区间判定规则（见 §\ref{sec:unc}.3）自动挂起诊断 \\
+追溯归档      & 每次诊断记录时间戳 + 输入分布参数 + $95\%$ CI 进 SCADA 历史库 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =================================================================
+\section{代码仓库结构}\label{app:code}
+% -----------------------------------------------------------------
+配套代码仓库目录结构如下：
+\begin{verbatim}
+task_rgdzy/
+  code/
+    twin.py                       # Pipe 与 Network 数据结构
+    solver.py                     # Hardy-Cross 主求解器
+    networks/station_5br.py       # 5 支路换热站实例
+    sensitivity.py                # 灵敏度矩阵 + 贪心 SVD
+    faults.py                     # 故障样本生成 (5900 条)
+    train.py                      # RF + XGBoost + SHAP
+    inference.py                  # 推理 CLI
+    hii.py                        # HII 综合指数
+    mc_uncertainty.py             # MC 误差传递
+    dynamic_filter.py             # EWMA + 稳态判定 + 反卷积
+    cross_validate_analytic.py    # scipy-fsolve 独立交叉验证
+  data/                           # dataset.csv 等
+  fig/                            # 9 张结果图
+  models/xgb_fdd.json             # 训练好的分类器
+  results/                        # train_summary/mc_summary/cross_validation
+\end{verbatim}
+
+\end{document}

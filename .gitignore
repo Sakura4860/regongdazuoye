@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Data & Results (large files)
+data/
+results/
+models/
+fig/
+*.pdf
+*.docx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp
+*~
+*.tmp
+~$*
